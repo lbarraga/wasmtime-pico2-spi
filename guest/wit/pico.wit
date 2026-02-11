@@ -1,0 +1,11 @@
+package local:demo;
+
+world blinky {
+    import host: interface {
+        on: func();
+        off: func();
+        delay: func(ms: u32);
+    }
+
+    export run: func();
+}

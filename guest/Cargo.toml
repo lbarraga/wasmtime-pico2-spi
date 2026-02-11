@@ -1,0 +1,17 @@
+[package]
+name = "guest"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+wit-bindgen = "0.48.1"
+
+[lib]
+crate-type = ["cdylib"]
+
+[profile.release]
+opt-level = "z"      # Optimize for size
+lto = true           # Link Time Optimization
+codegen-units = 1    # Better optimization
+panic = "abort"      # Remove panic unwinding code
+strip = true         # Remove symbols
