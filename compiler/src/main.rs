@@ -1,0 +1,57 @@
+use std::fs;
+use std::path::Path;
+use wasmtime::{Config, Engine};
+
+fn main() -> anyhow::Result<()> {
+    println!("Compiling guest for Pulley...");
+
+    // 1. Configure Engine to EXACTLY match the Pico 2 Host capabilities
+    let mut config = Config::new();
+    config.target("pulley32")?;
+
+    // --- Features: Must match what is enabled/disabled in Host Cargo.toml ---
+    config.wasm_component_model(true);
+    config.async_support(false);
+
+    // Disable GC features (Proposal + Support)
+    config.wasm_gc(false);
+    config.wasm_function_references(false);
+    config.gc_support(false);
+
+    // --- Runtime/Memory: Must match Host config initialization ---
+    config.signals_based_traps(false); // No OS signals on Pico
+    config.memory_init_cow(false); // Match CoW setting (Copy-on-Write)
+    config.memory_guard_size(0); // No virtual memory guard pages
+    config.memory_reservation(0); // No address space reservation
+    config.max_wasm_stack(32 * 1024); // Match stack size limit
+
+    let engine = Engine::new(&config)?;
+
+    // 2. Input Path (Strict: No guessing)
+    // The workspace puts artifacts in the root target folder
+    let input_path = Path::new("target/wasm32-unknown-unknown/release/guest.wasm");
+
+    if !input_path.exists() {
+        anyhow::bail!(
+             "Input file not found at: {:?}\nDid you run 'cargo component build -p guest --release --target wasm32-unknown-unknown'?", 
+             input_path
+         );
+    }
+
+    println!("Reading component from: {:?}", input_path);
+    let wasm_bytes = fs::read(input_path)?;
+
+    // 3. Precompile
+    let serialized = engine.precompile_component(&wasm_bytes)?;
+
+    // 4. Output
+    let output_path = Path::new("pico2-quick/src/guest.pulley");
+    fs::write(output_path, &serialized)?;
+
+    println!(
+        "Success! Wrote {} bytes to {:?}",
+        serialized.len(),
+        output_path
+    );
+    Ok(())
+}
