@@ -6,3 +6,10 @@ members = [
     "guest",
     "pico2-quick"
 ]
+
+[profile.release]
+opt-level = "z"      # Optimize for size
+lto = true           # Link Time Optimization
+codegen-units = 1    # Better optimization
+panic = "abort"      # Remove panic unwinding
+strip = "debuginfo"  # KEEP symbols for defmt, but strip other debug info

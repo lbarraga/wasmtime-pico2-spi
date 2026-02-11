@@ -3,6 +3,8 @@
 
 extern crate alloc;
 
+use core::alloc::{GlobalAlloc, Layout};
+use core::sync::atomic::{AtomicUsize, Ordering};
 use defmt::{error, info};
 use embassy_executor::Spawner;
 use embassy_rp::gpio::{Level, Output};
@@ -12,33 +14,67 @@ use {defmt_rtt as _, panic_probe as _};
 use wasmtime::component::{Component, HasSelf, Linker};
 use wasmtime::{Config, Engine, Store};
 
-// --- 1. Generate Bindings (Root Level, like your example) ---
-// We use the 'with' key to map the WIT 'host' interface directly to our HostState struct.
-// This allows the linker to find the implementation automatically.
+// --- 1. Logging Wrapper Allocator ---
+struct LoggingAllocator {
+    inner: Heap,
+    used: AtomicUsize,
+}
+
+impl LoggingAllocator {
+    const fn empty() -> Self {
+        Self {
+            inner: Heap::empty(),
+            used: AtomicUsize::new(0),
+        }
+    }
+
+    unsafe fn init(&self, start: usize, size: usize) {
+        self.inner.init(start, size);
+    }
+}
+
+unsafe impl GlobalAlloc for LoggingAllocator {
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        let ptr = self.inner.alloc(layout);
+        if !ptr.is_null() {
+            let prev = self.used.fetch_add(layout.size(), Ordering::SeqCst);
+            // Log: [A]llocation size | Total [U]sed
+            info!("[A] {} [U] {}", layout.size(), prev + layout.size());
+        } else {
+            error!("ALLOCATION FAILED: size {}", layout.size());
+        }
+        ptr
+    }
+
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        self.inner.dealloc(ptr, layout);
+        let prev = self.used.fetch_sub(layout.size(), Ordering::SeqCst);
+        info!("[D] {} [U] {}", layout.size(), prev - layout.size());
+    }
+}
+
+#[global_allocator]
+static ALLOCATOR: LoggingAllocator = LoggingAllocator::empty();
+
+// --- 2. Bindings & Host State ---
 wasmtime::component::bindgen!({
     path: "../guest/wit/pico.wit",
     world: "blinky",
 });
 
-// --- 2. Host State ---
-// MARKED PUB: This must be public so the generated 'bindgen!' code can access it.
 pub struct HostState {
     pub led: Output<'static>,
 }
 
-// --- 3. Implement the Generated Trait ---
-// Since we used 'with: { "host": HostState }', we implement the trait for HostState.
 impl host::Host for HostState {
     fn on(&mut self) {
         self.led.set_high();
         info!("Guest: ON");
     }
-
     fn off(&mut self) {
         self.led.set_low();
         info!("Guest: OFF");
     }
-
     fn delay(&mut self, ms: u32) {
         embassy_time::block_for(embassy_time::Duration::from_millis(ms as u64));
     }
@@ -57,28 +93,16 @@ pub extern "C" fn wasmtime_tls_set(ptr: *mut u8) {
     }
 }
 
-#[global_allocator]
-static HEAP: Heap = Heap::empty();
-
-#[unsafe(link_section = ".bi_entries")]
-#[used]
-pub static PICOTOOL_ENTRIES: [embassy_rp::binary_info::EntryAddr; 4] = [
-    embassy_rp::binary_info::rp_program_name!(c"Pico2 Wasmtime"),
-    embassy_rp::binary_info::rp_program_description!(c"Pulley Interpreter"),
-    embassy_rp::binary_info::rp_cargo_version!(),
-    embassy_rp::binary_info::rp_program_build_attribute!(),
-];
-
 #[embassy_executor::main]
 async fn main(_spawner: Spawner) {
     let p = embassy_rp::init(Default::default());
 
-    // Initialize Heap (400KB)
+    // Initialize Heap
     {
         use core::mem::MaybeUninit;
-        const HEAP_SIZE: usize = 400 * 1024;
+        const HEAP_SIZE: usize = 440 * 1024; // Increased to 440KB
         static mut HEAP_MEM: [MaybeUninit<u8>; HEAP_SIZE] = [MaybeUninit::uninit(); HEAP_SIZE];
-        unsafe { HEAP.init(core::ptr::addr_of_mut!(HEAP_MEM) as usize, HEAP_SIZE) }
+        unsafe { ALLOCATOR.init(core::ptr::addr_of_mut!(HEAP_MEM) as usize, HEAP_SIZE) }
     }
 
     info!("Heap initialized. Setting up Wasmtime...");
@@ -89,53 +113,27 @@ async fn main(_spawner: Spawner) {
     config.memory_init_cow(false);
     config.memory_guard_size(0);
     config.memory_reservation(0);
-    config.max_wasm_stack(32 * 1024);
+    // Reduced stack to save RAM
+    config.max_wasm_stack(8 * 1024);
 
-    let engine = match Engine::new(&config) {
-        Ok(e) => e,
-        Err(e) => {
-            error!("Engine creation failed: {:?}", defmt::Debug2Format(&e));
-            return;
-        }
-    };
+    let engine = Engine::new(&config).expect("Engine failed");
 
     let led = Output::new(p.PIN_25, Level::Low);
     let mut store = Store::new(&engine, HostState { led });
     let mut linker = Linker::new(&engine);
 
-    if let Err(e) = Blinky::add_to_linker::<HostState, HasSelf<HostState>>(
-        &mut linker,
-        |state: &mut HostState| state,
-    ) {
-        error!(
-            "Failed to link host functions: {:?}",
-            defmt::Debug2Format(&e)
-        );
-        return;
-    }
+    Blinky::add_to_linker::<HostState, HasSelf<HostState>>(&mut linker, |state: &mut HostState| {
+        state
+    })
+    .unwrap();
 
     let guest_bytes = include_bytes!("guest.pulley");
-    info!("Loaded guest bytecode: {} bytes", guest_bytes.len());
+    info!("Step 6: Deserializing component...");
+    let component = unsafe { Component::deserialize(&engine, guest_bytes) }.unwrap();
 
-    let component = match unsafe { Component::deserialize(&engine, guest_bytes) } {
-        Ok(c) => c,
-        Err(e) => {
-            error!("Deserialize failed: {:?}", defmt::Debug2Format(&e));
-            return;
-        }
-    };
-
-    // Instantiate directly (no tuple return, just the struct)
-    let blinky = match Blinky::instantiate(&mut store, &component, &linker) {
-        Ok(b) => b,
-        Err(e) => {
-            error!("Instantiation failed: {:?}", defmt::Debug2Format(&e));
-            return;
-        }
-    };
+    info!("Step 7: Instantiating...");
+    let blinky = Blinky::instantiate(&mut store, &component, &linker).unwrap();
 
     info!("Starting guest...");
-    if let Err(e) = blinky.call_run(&mut store) {
-        error!("Runtime error: {:?}", defmt::Debug2Format(&e));
-    }
+    blinky.call_run(&mut store).unwrap();
 }
