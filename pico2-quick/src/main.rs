@@ -119,7 +119,7 @@ async fn main(_spawner: Spawner) {
 
     let engine = Engine::new(&config).expect("Engine failed");
 
-    let led = Output::new(p.PIN_25, Level::Low);
+    let led = Output::new(p.PIN_15, Level::Low);
     let mut store = Store::new(&engine, HostState { led });
     let mut linker = Linker::new(&engine);
 
