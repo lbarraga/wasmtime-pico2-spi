@@ -1,9 +1,16 @@
-use std::fs;
 use std::path::Path;
+use std::{env, fs};
 use wasmtime::{Config, Engine};
 
 fn main() -> anyhow::Result<()> {
     println!("Compiling guest for Pulley...");
+    let mode = env::args().nth(1).unwrap_or_else(|| "unknown".to_string());
+
+    let input_path = match mode.as_str() {
+        "p2" => Path::new("target/wasm32-wasip2/release/guest.wasm"),
+        "unknown" => Path::new("target/wasm32-unknown-unknown/release/guest.wasm"),
+        _ => anyhow::bail!("Invalid mode '{}'. Use: p2 | unknown", mode),
+    };
 
     // 1. Configure Engine to EXACTLY match the Pico 2 Host capabilities
     let mut config = Config::new();
@@ -29,7 +36,6 @@ fn main() -> anyhow::Result<()> {
 
     // 2. Input Path (Strict: No guessing)
     // The workspace puts artifacts in the root target folder
-    let input_path = Path::new("target/wasm32-unknown-unknown/release/guest.wasm");
 
     if !input_path.exists() {
         anyhow::bail!(
