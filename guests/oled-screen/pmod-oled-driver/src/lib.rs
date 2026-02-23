@@ -10,6 +10,7 @@ generate!({
 use crate::exports::my::pmod_oled_driver::graphics::{
     DisplayError, Guest, GuestDisplay, PixelColor,
 };
+use crate::my::debug::logging::log;
 use crate::wasi::delay::delay::delay_ms as host_delay_ms;
 use crate::wasi::gpio::gpio::{Level, set_pin_state};
 use crate::wasi::spi::spi::{Config, Mode, SpiDevice, get_device_names, open_device};
@@ -36,10 +37,15 @@ pub struct Display {
 
 impl GuestDisplay for Display {
     fn new() -> Self {
+        log("[Driver] Display::new() invoked");
+
+        log("[Driver] Calling get_device_names()...");
         let names = get_device_names();
 
+        log("[Driver] Opening SPI device...");
         let spi = open_device(&names[0]).expect("No SPI device found");
 
+        log("[Driver] Configuring SPI...");
         // Pass Config by value
         spi.configure(Config {
             frequency: 8_000_000,
@@ -48,9 +54,13 @@ impl GuestDisplay for Display {
         })
         .unwrap();
 
+        log("[Driver] Allocating 512-byte framebuffer...");
+        let buffer = RefCell::new(vec![0u8; 512]);
+
+        log("[Driver] Initialization complete!");
         Self {
             spi,
-            buffer: RefCell::new(vec![0u8; 512]),
+            buffer,
             is_on: Cell::new(false),
         }
     }

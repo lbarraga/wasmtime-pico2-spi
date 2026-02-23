@@ -5,6 +5,7 @@ world driver {
     import wasi:spi/spi;
     import wasi:gpio/gpio;
     import wasi:delay/delay;
+    import my:debug/logging;
 
     // 2. Public Export (The interface defined in graphics.wit)
     export graphics;

@@ -5,35 +5,106 @@ extern crate alloc;
 
 use alloc::collections::BTreeMap;
 use alloc::string::ToString;
-use defmt::info;
+use core::alloc::{GlobalAlloc, Layout};
+use core::sync::atomic::{AtomicUsize, Ordering};
+use defmt::{error, info};
 use embassy_executor::Spawner;
 use embassy_rp::gpio::{Level, Output};
 use embassy_rp::spi::{Config as RpSpiConfig, Phase, Polarity, Spi};
 use embedded_alloc::Heap;
 use {defmt_rtt as _, panic_probe as _};
 
-use wasmtime::component::{Component, Linker, ResourceTable};
+use wasmtime::component::{Component, HasSelf, Linker, ResourceTable};
 use wasmtime::{Config, Engine, Store};
 
-// Import contexts and views from our new library crates
+// Import contexts and views
 use delay::{DelayCtx, DelayView};
 use gpio::{GpioCtx, GpioView};
 use spi::{SpiCtx, SpiView};
 
-// Point to the new Guest WIT folder
 wasmtime::component::bindgen!({
     path: "../guests/oled-screen/pacman/wit",
     world: "app",
 });
 
-#[global_allocator]
-static ALLOCATOR: Heap = Heap::empty();
+// --- Custom Tracking Allocator ---
+const HEAP_SIZE: usize = 440 * 1024; // 440KB
+static ALLOCATED_BYTES: AtomicUsize = AtomicUsize::new(0);
+static PEAK_BYTES: AtomicUsize = AtomicUsize::new(0);
 
-// The combined HostState holds the state for all WIT interfaces
+struct TrackingAllocator;
+
+unsafe impl GlobalAlloc for TrackingAllocator {
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        // Wrap the inner allocator call in an unsafe block
+        let ptr = unsafe { INNER_ALLOCATOR.alloc(layout) };
+
+        // Intercept and log Out-Of-Memory events exactly when they happen!
+        if ptr.is_null() {
+            let current = ALLOCATED_BYTES.load(Ordering::Relaxed);
+            let free = HEAP_SIZE.saturating_sub(current);
+            error!(
+                "OOM INTERCEPTED! Wasmtime asked for {} bytes (alignment {}). Only {} bytes free out of {} total.",
+                layout.size(),
+                layout.align(),
+                free,
+                HEAP_SIZE
+            );
+        } else {
+            let prev = ALLOCATED_BYTES.fetch_add(layout.size(), Ordering::Relaxed);
+            let current = prev + layout.size();
+
+            // Track peak memory usage
+            let mut peak = PEAK_BYTES.load(Ordering::Relaxed);
+            while current > peak {
+                match PEAK_BYTES.compare_exchange_weak(
+                    peak,
+                    current,
+                    Ordering::Relaxed,
+                    Ordering::Relaxed,
+                ) {
+                    Ok(_) => break,
+                    Err(new_peak) => peak = new_peak,
+                }
+            }
+        }
+        ptr
+    }
+
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        ALLOCATED_BYTES.fetch_sub(layout.size(), Ordering::Relaxed);
+        // Wrap the inner deallocator call in an unsafe block
+        unsafe { INNER_ALLOCATOR.dealloc(ptr, layout) };
+    }
+}
+
+#[global_allocator]
+static TRACKING_ALLOCATOR: TrackingAllocator = TrackingAllocator;
+static INNER_ALLOCATOR: Heap = Heap::empty();
+
+// Helper to print memory usage at different stages
+fn log_memory_usage(stage: &str) {
+    let current = ALLOCATED_BYTES.load(Ordering::Relaxed);
+    let peak = PEAK_BYTES.load(Ordering::Relaxed);
+    let free = HEAP_SIZE.saturating_sub(current);
+    info!(
+        "[{}] Mem Used: {} B | Free: {} B | Peak: {} B",
+        stage, current, free, peak
+    );
+}
+
+// --- Host State ---
 pub struct HostState {
     pub spi_ctx: SpiCtx,
     pub gpio_ctx: GpioCtx,
     pub delay_ctx: DelayCtx,
+}
+
+impl my::debug::logging::Host for HostState {
+    fn log(&mut self, msg: alloc::string::String) {
+        // Print the guest's string directly to probe-rs using defmt!
+        defmt::info!("[Guest] {}", msg.as_str());
+    }
 }
 
 impl SpiView for HostState {
@@ -74,12 +145,12 @@ async fn main(_spawner: Spawner) {
     // Initialize Heap
     {
         use core::mem::MaybeUninit;
-        const HEAP_SIZE: usize = 440 * 1024; // 440KB
         static mut HEAP_MEM: [MaybeUninit<u8>; HEAP_SIZE] = [MaybeUninit::uninit(); HEAP_SIZE];
-        unsafe { ALLOCATOR.init(core::ptr::addr_of_mut!(HEAP_MEM) as usize, HEAP_SIZE) }
+        unsafe { INNER_ALLOCATOR.init(core::ptr::addr_of_mut!(HEAP_MEM) as usize, HEAP_SIZE) }
     }
 
-    info!("Heap initialized. Setting up Wasmtime...");
+    info!("Heap initialized.");
+    log_memory_usage("Startup");
 
     let mut config = Config::new();
     config.target("pulley32").unwrap();
@@ -89,37 +160,30 @@ async fn main(_spawner: Spawner) {
     config.memory_init_cow(false);
     config.memory_guard_size(0);
     config.memory_reservation(0);
-    config.max_wasm_stack(32 * 1024);
+    config.max_wasm_stack(16 * 1024); // Limit internal stack size
     config.memory_reservation_for_growth(0);
 
     let engine = Engine::new(&config).expect("Engine failed");
+    log_memory_usage("After Engine::new");
 
-    // --- Initialize SPI hardware (SPI0 based on pins 18 & 19) ---
+    // --- Initialize SPI hardware ---
     let clk = p.PIN_18;
     let mosi = p.PIN_19;
 
     let mut spi_config = RpSpiConfig::default();
-    spi_config.frequency = 8_000_000; // 8 MHz
-
-    // Mode 0: CPOL = 0, CPHA = 0
+    spi_config.frequency = 8_000_000;
     spi_config.polarity = Polarity::IdleLow;
     spi_config.phase = Phase::CaptureOnFirstTransition;
 
-    // Embassy sets MSB first by default
     let spi_driver = Spi::new_blocking_txonly(p.SPI0, clk, mosi, spi_config);
 
     // --- Initialize GPIO Hardware ---
     let mut pins = BTreeMap::new();
-
-    // Setup Data/Command (DC) and Reset (RES) pins for the OLED
-    // Pass the peripheral directly; Output::new will degrade it.
     pins.insert("DC".to_string(), Output::new(p.PIN_20, Level::Low));
     pins.insert("RES".to_string(), Output::new(p.PIN_21, Level::Low));
-    // Be sure to also add VBATC and VDDC if your guest uses them!
     pins.insert("VBATC".to_string(), Output::new(p.PIN_22, Level::Low));
     pins.insert("VDDC".to_string(), Output::new(p.PIN_23, Level::Low));
 
-    // Assemble Host State
     let host_state = HostState {
         spi_ctx: SpiCtx {
             table: ResourceTable::new(),
@@ -132,17 +196,27 @@ async fn main(_spawner: Spawner) {
     let mut store = Store::new(&engine, host_state);
     let mut linker = Linker::new(&engine);
 
-    // Link the component libraries into Wasmtime
     spi::add_to_linker(&mut linker).unwrap();
     gpio::add_to_linker(&mut linker).unwrap();
     delay::add_to_linker(&mut linker).unwrap();
+    my::debug::logging::add_to_linker::<HostState, HasSelf<HostState>>(&mut linker, |state| state)
+        .unwrap();
 
     let guest_bytes = include_bytes!("guest.pulley");
-    info!("Deserializing component...");
+    info!(
+        "Deserializing component (Size: {} bytes)...",
+        guest_bytes.len()
+    );
+
+    log_memory_usage("Before deserialize");
     let component = unsafe { Component::deserialize(&engine, guest_bytes) }.unwrap();
+    log_memory_usage("After deserialize");
 
     info!("Instantiating...");
+    // If it fails here, the custom allocator will log the exact requested size first
     let app = App::instantiate(&mut store, &component, &linker).unwrap();
+
+    log_memory_usage("After instantiate");
 
     info!("Starting guest...");
     app.call_run(&mut store).unwrap();

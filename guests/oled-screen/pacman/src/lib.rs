@@ -3,16 +3,22 @@ use wit_bindgen::generate;
 generate!({
     path: "wit",
     world: "app",
-    with: { "my:pmod-oled-driver/graphics": generate }
+    with: {
+        "my:pmod-oled-driver/graphics": generate,
+        "my:debug/logging": generate,
+    }
 });
 
+use crate::my::debug::logging::log;
 use crate::my::pmod_oled_driver::graphics::{Display, DisplayError, PixelColor};
 
 struct PacmanApp;
 
 impl Guest for PacmanApp {
     fn run() {
+        log("Pacman guest started! Attempting to initialize display...");
         let display = Display::new();
+        log("Display initialized successfully!");
 
         display.on().expect("Failed to turn on screen");
 
