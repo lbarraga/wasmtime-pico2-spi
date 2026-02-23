@@ -1,3 +1,6 @@
+#![no_std]
+extern crate alloc;
+
 use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
@@ -7,8 +10,9 @@ use embassy_rp::peripherals::SPI0;
 use embassy_rp::spi::{Blocking, Spi};
 use wasmtime::component::{HasData, Linker, Resource, ResourceTable};
 
+// Adjust path depending on your workspace root
 wasmtime::component::bindgen!({
-    path: "../wit",
+    path: "../../wit/spi.wit",
     world: "wasi-spi-host",
     with: {
         "wasi:spi/spi.spi-device": ActiveSpiDriver
@@ -59,9 +63,8 @@ impl<'a, T: SpiView> wasi::spi::spi::HostSpiDevice for SpiImpl<'a, T> {
     fn configure(
         &mut self,
         _handle: Resource<ActiveSpiDriver>,
-        config: wasi::spi::spi::Config,
+        _config: wasi::spi::spi::Config,
     ) -> Result<(), wasi::spi::spi::Error> {
-        // Implement runtime reconfiguration here if desired by modifying self.host.spi_ctx().spi
         Ok(())
     }
 
@@ -112,7 +115,6 @@ impl<'a, T: SpiView> wasi::spi::spi::HostSpiDevice for SpiImpl<'a, T> {
         operations: Vec<wasi::spi::spi::Operation>,
     ) -> Result<Vec<wasi::spi::spi::OperationResult>, wasi::spi::spi::Error> {
         let mut results = Vec::new();
-
         for op in operations {
             match op {
                 wasi::spi::spi::Operation::Read(len) => {
@@ -157,11 +159,9 @@ impl<'a, T: SpiView> wasi::spi::spi::HostSpiDevice for SpiImpl<'a, T> {
 }
 
 pub struct SpiBindingMarker<T>(PhantomData<T>);
-
 impl<T: SpiView + 'static> HasData for SpiBindingMarker<T> {
     type Data<'a> = SpiImpl<'a, T>;
 }
-
 pub fn add_to_linker<T: SpiView + 'static>(linker: &mut Linker<T>) -> wasmtime::Result<()> {
     wasi::spi::spi::add_to_linker::<T, SpiBindingMarker<T>>(linker, |host| SpiImpl { host })
 }

@@ -562,6 +562,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "delay"
+version = "0.1.0"
+dependencies = [
+ "embassy-time",
+ "wasmtime",
+]
+
+[[package]]
 name = "digest"
 version = "0.10.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1082,6 +1090,14 @@ dependencies = [
  "fallible-iterator",
  "indexmap",
  "stable_deref_trait",
+]
+
+[[package]]
+name = "gpio"
+version = "0.1.0"
+dependencies = [
+ "embassy-rp",
+ "wasmtime",
 ]
 
 [[package]]
@@ -2060,6 +2076,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a7f4441a131924d58da6b83a7ad765c460e64630cce504376c3a87a2558c487f"
 dependencies = [
  "rgb",
+]
+
+[[package]]
+name = "spi"
+version = "0.1.0"
+dependencies = [
+ "embassy-rp",
+ "embassy-time",
+ "wasmtime",
 ]
 
 [[package]]

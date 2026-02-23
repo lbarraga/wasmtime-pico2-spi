@@ -3,8 +3,11 @@
 
 extern crate alloc;
 
+use alloc::collections::BTreeMap;
+use alloc::string::ToString;
 use defmt::info;
 use embassy_executor::Spawner;
+use embassy_rp::gpio::{AnyPin, Level, Output};
 use embassy_rp::spi::{Config as RpSpiConfig, Phase, Polarity, Spi};
 use embedded_alloc::Heap;
 use {defmt_rtt as _, panic_probe as _};
@@ -12,8 +15,10 @@ use {defmt_rtt as _, panic_probe as _};
 use wasmtime::component::{Component, Linker, ResourceTable};
 use wasmtime::{Config, Engine, Store};
 
-mod spi_lib;
-use spi_lib::{SpiCtx, SpiView};
+// Import contexts and views from our new library crates
+use delay::{DelayCtx, DelayView};
+use gpio::{GpioCtx, GpioView};
+use spi::{SpiCtx, SpiView};
 
 // Point to the new Guest WIT folder
 wasmtime::component::bindgen!({
@@ -24,13 +29,28 @@ wasmtime::component::bindgen!({
 #[global_allocator]
 static ALLOCATOR: Heap = Heap::empty();
 
+// The combined HostState holds the state for all WIT interfaces
 pub struct HostState {
     pub spi_ctx: SpiCtx,
+    pub gpio_ctx: GpioCtx,
+    pub delay_ctx: DelayCtx,
 }
 
 impl SpiView for HostState {
     fn spi_ctx(&mut self) -> &mut SpiCtx {
         &mut self.spi_ctx
+    }
+}
+
+impl GpioView for HostState {
+    fn gpio_ctx(&mut self) -> &mut GpioCtx {
+        &mut self.gpio_ctx
+    }
+}
+
+impl DelayView for HostState {
+    fn delay_ctx(&mut self) -> &mut DelayCtx {
+        &mut self.delay_ctx
     }
 }
 
@@ -74,7 +94,7 @@ async fn main(_spawner: Spawner) {
 
     let engine = Engine::new(&config).expect("Engine failed");
 
-    // Initialize SPI hardware (SPI0 based on pins 18 & 19)
+    // --- Initialize SPI hardware (SPI0 based on pins 18 & 19) ---
     let clk = p.PIN_18;
     let mosi = p.PIN_19;
 
@@ -85,21 +105,40 @@ async fn main(_spawner: Spawner) {
     spi_config.polarity = Polarity::IdleLow;
     spi_config.phase = Phase::CaptureOnFirstTransition;
 
-    // Embassy sets MSB first by default, which is equivalent to lsb_first = false
+    // Embassy sets MSB first by default
+    let spi_driver = Spi::new_blocking_txonly(p.SPI0, clk, mosi, spi_config);
 
-    // We use a TX-only SPI because the PmodOLED does not have a MISO pin connected
-    let spi = Spi::new_blocking_txonly(p.SPI0, clk, mosi, spi_config);
+    // --- Initialize GPIO Hardware ---
+    let mut pins = BTreeMap::new();
 
-    let spi_ctx = SpiCtx {
-        table: ResourceTable::new(),
-        spi,
+    // Example: Setup Data/Command (DC) and Reset (RES) pins for the OLED
+    // Modify the PIN numbers according to your actual wiring
+    pins.insert(
+        "dc".to_string(),
+        Output::new(AnyPin::from(p.PIN_20), Level::Low),
+    );
+    pins.insert(
+        "res".to_string(),
+        Output::new(AnyPin::from(p.PIN_21), Level::Low),
+    );
+
+    // Assemble Host State
+    let host_state = HostState {
+        spi_ctx: SpiCtx {
+            table: ResourceTable::new(),
+            spi: spi_driver,
+        },
+        gpio_ctx: GpioCtx { pins },
+        delay_ctx: DelayCtx {},
     };
 
-    let mut store = Store::new(&engine, HostState { spi_ctx });
+    let mut store = Store::new(&engine, host_state);
     let mut linker = Linker::new(&engine);
 
-    // Link the SPI library
-    spi_lib::add_to_linker(&mut linker).unwrap();
+    // Link the component libraries into Wasmtime
+    spi::add_to_linker(&mut linker).unwrap();
+    gpio::add_to_linker(&mut linker).unwrap();
+    delay::add_to_linker(&mut linker).unwrap();
 
     let guest_bytes = include_bytes!("guest.pulley");
     info!("Deserializing component...");

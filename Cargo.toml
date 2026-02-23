@@ -6,7 +6,10 @@ members = [
     "pico2-quick",
     "guests/oled-screen/pmod-oled-driver",
     "guests/oled-screen/pacman",
-    "guests/oled-screen/ball-screensaver"
+    "guests/oled-screen/ball-screensaver", 
+    "lib/spi", 
+    "lib/delay", 
+    "lib/gpio"
 ]
 
 [profile.release]

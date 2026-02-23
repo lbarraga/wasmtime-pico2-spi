@@ -8,3 +8,7 @@ interface gpio {
 
     set-pin-state: func(label: string, level: level);
 }
+
+world wasi-gpio-host {
+    import gpio;
+}
