@@ -1,0 +1,5 @@
+package wasi:delay;
+
+interface delay {
+    delay-ms: func(ms: u32);
+}

@@ -1,0 +1,10 @@
+package wasi:gpio;
+
+interface gpio {
+    enum level {
+        low,
+        high,
+    }
+
+    set-pin-state: func(label: string, level: level);
+}
