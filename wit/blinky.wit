@@ -4,6 +4,9 @@ interface blinky {
   on: func();
   off: func();
   delay: func(ms: u32);
+
+  get-range-strings: func(n: u32) -> list<string>;
+  log: func(msg: string);
 }
 
 world blinky-host {

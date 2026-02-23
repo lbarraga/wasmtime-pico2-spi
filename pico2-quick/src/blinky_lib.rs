@@ -3,6 +3,10 @@ use defmt::info;
 use embassy_rp::gpio::Output;
 use wasmtime::component::{HasData, Linker};
 
+extern crate alloc;
+use alloc::string::{String, ToString};
+use alloc::vec::Vec;
+
 // 1. Point to the TOP-LEVEL wit folder
 wasmtime::component::bindgen!({
     path: "../wit",
@@ -34,6 +38,14 @@ impl<'a, T: BlinkyView> wasi::blinky::blinky::Host for BlinkyImpl<'a, T> {
 
     fn delay(&mut self, ms: u32) {
         embassy_time::block_for(embassy_time::Duration::from_millis(ms as u64));
+    }
+
+    fn get_range_strings(&mut self, n: u32) -> Vec<String> {
+        (0..=n).map(|i| i.to_string()).collect()
+    }
+
+    fn log(&mut self, msg: String) {
+        info!("Guest Log: {}", msg.as_str());
     }
 }
 
