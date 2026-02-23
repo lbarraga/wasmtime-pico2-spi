@@ -7,7 +7,7 @@ use alloc::collections::BTreeMap;
 use alloc::string::ToString;
 use defmt::info;
 use embassy_executor::Spawner;
-use embassy_rp::gpio::{AnyPin, Level, Output};
+use embassy_rp::gpio::{Level, Output};
 use embassy_rp::spi::{Config as RpSpiConfig, Phase, Polarity, Spi};
 use embedded_alloc::Heap;
 use {defmt_rtt as _, panic_probe as _};
@@ -111,16 +111,13 @@ async fn main(_spawner: Spawner) {
     // --- Initialize GPIO Hardware ---
     let mut pins = BTreeMap::new();
 
-    // Example: Setup Data/Command (DC) and Reset (RES) pins for the OLED
-    // Modify the PIN numbers according to your actual wiring
-    pins.insert(
-        "dc".to_string(),
-        Output::new(AnyPin::from(p.PIN_20), Level::Low),
-    );
-    pins.insert(
-        "res".to_string(),
-        Output::new(AnyPin::from(p.PIN_21), Level::Low),
-    );
+    // Setup Data/Command (DC) and Reset (RES) pins for the OLED
+    // Pass the peripheral directly; Output::new will degrade it.
+    pins.insert("DC".to_string(), Output::new(p.PIN_20, Level::Low));
+    pins.insert("RES".to_string(), Output::new(p.PIN_21, Level::Low));
+    // Be sure to also add VBATC and VDDC if your guest uses them!
+    pins.insert("VBATC".to_string(), Output::new(p.PIN_22, Level::Low));
+    pins.insert("VDDC".to_string(), Output::new(p.PIN_23, Level::Low));
 
     // Assemble Host State
     let host_state = HostState {

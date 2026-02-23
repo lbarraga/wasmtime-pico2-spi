@@ -4,20 +4,14 @@ use wit_bindgen::generate;
 generate!({
     path: "wit",
     world: "driver",
-    with: {
-        "wasi:spi/spi": generate,
-        "wasi:gpio/digital@0.2.0": generate,
-        "wasi:gpio/delay@0.2.0": generate,
-        "wasi:gpio/general@0.2.0": generate,
-        "wasi:gpio/poll@0.2.0": generate,
-    }
+    generate_all
 });
 
 use crate::exports::my::pmod_oled_driver::graphics::{
     DisplayError, Guest, GuestDisplay, PixelColor,
 };
-use crate::wasi::gpio::delay::delay_ms as host_delay_ms;
-use crate::wasi::gpio::digital::{DigitalFlag, DigitalOutPin, PinState};
+use crate::wasi::delay::delay::delay_ms as host_delay_ms;
+use crate::wasi::gpio::gpio::{Level, set_pin_state};
 use crate::wasi::spi::spi::{Config, Mode, SpiDevice, get_device_names, open_device};
 
 const WIDTH: u32 = 128;
@@ -36,12 +30,6 @@ impl Guest for OledDriver {
 
 pub struct Display {
     spi: SpiDevice,
-    dc: DigitalOutPin,
-
-    _res: DigitalOutPin,
-    vbatc: DigitalOutPin,
-    vddc: DigitalOutPin,
-
     buffer: RefCell<Vec<u8>>,
     is_on: Cell<bool>,
 }
@@ -51,6 +39,8 @@ impl GuestDisplay for Display {
         let names = get_device_names();
 
         let spi = open_device(&names[0]).expect("No SPI device found");
+
+        // Pass Config by value
         spi.configure(Config {
             frequency: 8_000_000,
             mode: Mode::Mode0,
@@ -58,20 +48,8 @@ impl GuestDisplay for Display {
         })
         .unwrap();
 
-        let flags_out = &[DigitalFlag::OUTPUT, DigitalFlag::ACTIVE_HIGH];
-        let flags_low = &[DigitalFlag::OUTPUT, DigitalFlag::ACTIVE_LOW];
-
-        let dc = DigitalOutPin::get("DC", flags_out).expect("DC pin");
-        let res = DigitalOutPin::get("RES", flags_low).expect("RES pin");
-        let vbatc = DigitalOutPin::get("VBATC", flags_low).expect("VBATC pin");
-        let vddc = DigitalOutPin::get("VDDC", flags_low).expect("VDDC pin");
-
         Self {
             spi,
-            dc,
-            _res: res,
-            vbatc,
-            vddc,
             buffer: RefCell::new(vec![0u8; 512]),
             is_on: Cell::new(false),
         }
@@ -82,19 +60,23 @@ impl GuestDisplay for Display {
             return Ok(());
         }
 
-        self.vbatc.set_state(PinState::Inactive).ok();
-        self.vddc.set_state(PinState::Inactive).ok();
-        host_delay_ms(100);
-        self.vddc.set_state(PinState::Active).ok();
-        host_delay_ms(100);
-        self.vbatc.set_state(PinState::Active).ok();
+        // VBATC and VDDC were active low, so "Inactive" is Level::High and "Active" is Level::Low
+        set_pin_state("VBATC", Level::High);
+        set_pin_state("VDDC", Level::High);
         host_delay_ms(100);
 
-        self._res.set_state(PinState::Inactive).ok();
+        set_pin_state("VDDC", Level::Low);
+        host_delay_ms(100);
+
+        set_pin_state("VBATC", Level::Low);
+        host_delay_ms(100);
+
+        // RES was active low
+        set_pin_state("RES", Level::High);
         host_delay_ms(1);
-        self._res.set_state(PinState::Active).ok();
+        set_pin_state("RES", Level::Low);
         host_delay_ms(10);
-        self._res.set_state(PinState::Inactive).ok();
+        set_pin_state("RES", Level::High);
 
         for &c in INIT_SEQUENCE {
             self.send_cmd(c)?;
@@ -166,9 +148,8 @@ impl GuestDisplay for Display {
         self.send_cmd(0)?;
         self.send_cmd(3)?;
 
-        self.dc
-            .set_state(PinState::Active)
-            .map_err(|_| DisplayError::HardwareError)?;
+        // DC is active high, so "Active" means Level::High
+        set_pin_state("DC", Level::High);
 
         self.spi
             .write(&self.buffer.borrow())
@@ -178,15 +159,14 @@ impl GuestDisplay for Display {
     }
 
     fn delay_ms(&self, ms: u32) {
-        host_delay_ms(ms as u64);
+        host_delay_ms(ms);
     }
 }
 
 impl Display {
     fn send_cmd(&self, c: u8) -> Result<(), DisplayError> {
-        self.dc
-            .set_state(PinState::Inactive)
-            .map_err(|_| DisplayError::HardwareError)?;
+        // DC is active high, so "Inactive" means Level::Low
+        set_pin_state("DC", Level::Low);
         self.spi
             .write(&[c])
             .map_err(|_| DisplayError::HardwareError)?;

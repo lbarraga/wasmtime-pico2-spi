@@ -1532,11 +1532,14 @@ dependencies = [
  "cortex-m-rt",
  "defmt",
  "defmt-rtt",
+ "delay",
  "embassy-executor",
  "embassy-rp",
  "embassy-time",
  "embedded-alloc",
+ "gpio",
  "panic-probe",
+ "spi",
  "wasmtime",
 ]
 
