@@ -5,32 +5,32 @@ extern crate alloc;
 
 use defmt::info;
 use embassy_executor::Spawner;
-use embassy_rp::gpio::{Level, Output};
+use embassy_rp::spi::{Config as RpSpiConfig, Phase, Polarity, Spi};
 use embedded_alloc::Heap;
 use {defmt_rtt as _, panic_probe as _};
 
-use wasmtime::component::{Component, Linker};
+use wasmtime::component::{Component, Linker, ResourceTable};
 use wasmtime::{Config, Engine, Store};
 
-mod blinky_lib;
-use blinky_lib::{BlinkyCtx, BlinkyView};
+mod spi_lib;
+use spi_lib::{SpiCtx, SpiView};
 
-// 1. Point to the Guest's WIT folder and use the "sos" world
+// Point to the new Guest WIT folder
 wasmtime::component::bindgen!({
-    path: "../guest/wit",
-    world: "sos",
+    path: "../guests/oled-screen/pacman/wit",
+    world: "app",
 });
 
 #[global_allocator]
 static ALLOCATOR: Heap = Heap::empty();
 
 pub struct HostState {
-    pub blinky_ctx: BlinkyCtx,
+    pub spi_ctx: SpiCtx,
 }
 
-impl BlinkyView for HostState {
-    fn blinky_ctx(&mut self) -> &mut BlinkyCtx {
-        &mut self.blinky_ctx
+impl SpiView for HostState {
+    fn spi_ctx(&mut self) -> &mut SpiCtx {
+        &mut self.spi_ctx
     }
 }
 
@@ -74,24 +74,40 @@ async fn main(_spawner: Spawner) {
 
     let engine = Engine::new(&config).expect("Engine failed");
 
-    let led = Output::new(p.PIN_15, Level::Low);
-    let blinky_ctx = BlinkyCtx { led };
-    let mut store = Store::new(&engine, HostState { blinky_ctx });
+    // Initialize SPI hardware (SPI0 based on pins 18 & 19)
+    let clk = p.PIN_18;
+    let mosi = p.PIN_19;
 
+    let mut spi_config = RpSpiConfig::default();
+    spi_config.frequency = 8_000_000; // 8 MHz
+
+    // Mode 0: CPOL = 0, CPHA = 0
+    spi_config.polarity = Polarity::IdleLow;
+    spi_config.phase = Phase::CaptureOnFirstTransition;
+
+    // Embassy sets MSB first by default, which is equivalent to lsb_first = false
+
+    // We use a TX-only SPI because the PmodOLED does not have a MISO pin connected
+    let spi = Spi::new_blocking_txonly(p.SPI0, clk, mosi, spi_config);
+
+    let spi_ctx = SpiCtx {
+        table: ResourceTable::new(),
+        spi,
+    };
+
+    let mut store = Store::new(&engine, HostState { spi_ctx });
     let mut linker = Linker::new(&engine);
 
-    // 2. Link the library as before
-    blinky_lib::add_to_linker(&mut linker).unwrap();
+    // Link the SPI library
+    spi_lib::add_to_linker(&mut linker).unwrap();
 
     let guest_bytes = include_bytes!("guest.pulley");
     info!("Deserializing component...");
     let component = unsafe { Component::deserialize(&engine, guest_bytes) }.unwrap();
 
     info!("Instantiating...");
-    // 3. Instantiate the component using the `Sos` struct from your `my:sos` world
-    let app = Sos::instantiate(&mut store, &component, &linker).unwrap();
+    let app = App::instantiate(&mut store, &component, &linker).unwrap();
 
     info!("Starting guest...");
-    // 4. Call the exported `run` function on the `Sos` instance
     app.call_run(&mut store).unwrap();
 }

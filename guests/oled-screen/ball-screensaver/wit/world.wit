@@ -1,0 +1,7 @@
+package my:pacman;
+
+world app {
+    import my:pmod-oled-driver/graphics;
+
+    export run: func();
+}

@@ -9,7 +9,7 @@ fn main() -> anyhow::Result<()> {
 
     let input_path = match mode.as_str() {
         "p2" => Path::new("target/wasm32-wasip2/release/guest.wasm"),
-        "unknown" => Path::new("target/wasm32-unknown-unknown/release/guest.wasm"),
+        "unknown" => Path::new("pacman.wasm"),
         _ => anyhow::bail!("Invalid mode '{}'. Use: p2 | unknown", mode),
     };
 
@@ -38,14 +38,14 @@ fn main() -> anyhow::Result<()> {
     println!("Reading component from: {:?}", input_path);
     let wasm_bytes = fs::read(input_path)?;
 
-    println!("Componentizing module...");
-    let component_bytes = ComponentEncoder::default()
-        .validate(true)
-        .module(&wasm_bytes)?
-        .encode()?;
+    //println!("Componentizing module...");
+    //let component_bytes = ComponentEncoder::default()
+    //    .validate(true)
+    //    .module(&wasm_bytes)?
+    //    .encode()?;
 
     // 3. Precompile
-    let serialized = engine.precompile_component(&component_bytes)?;
+    let serialized = engine.precompile_component(&wasm_bytes)?;
 
     // 4. Output
     let output_path = Path::new("pico2-quick/src/guest.pulley");

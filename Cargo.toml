@@ -3,8 +3,10 @@ resolver = "2"
 
 members = [
     "compiler",
-    "guest",
-    "pico2-quick"
+    "pico2-quick",
+    "guests/oled-screen/pmod-oled-driver",
+    "guests/oled-screen/pacman",
+    "guests/oled-screen/ball-screensaver"
 ]
 
 [profile.release]

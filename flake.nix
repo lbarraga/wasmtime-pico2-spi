@@ -39,6 +39,7 @@
             pkgs.cargo-generate
             pkgs.cargo-component
             pkgs.wasmtime
+            pkgs.wac-cli
             pkgs.wasm-tools
             pkgs.probe-rs-tools
           ];

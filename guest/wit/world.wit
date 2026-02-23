@@ -1,6 +1,0 @@
-package my:sos;
-
-world sos {
-    import wasi:blinky/blinky;
-    export run: func();
-}
