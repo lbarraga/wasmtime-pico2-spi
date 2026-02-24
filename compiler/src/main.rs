@@ -1,7 +1,6 @@
 use std::path::Path;
 use std::{env, fs};
 use wasmtime::{Config, Engine};
-use wit_component::ComponentEncoder;
 
 fn main() -> anyhow::Result<()> {
     println!("Compiling guest for Pulley...");

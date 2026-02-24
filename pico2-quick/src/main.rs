@@ -28,7 +28,7 @@ wasmtime::component::bindgen!({
 });
 
 // --- Custom Tracking Allocator ---
-const HEAP_SIZE: usize = 440 * 1024; // 440KB
+const HEAP_SIZE: usize = 470 * 1024; // 440KB
 static ALLOCATED_BYTES: AtomicUsize = AtomicUsize::new(0);
 static PEAK_BYTES: AtomicUsize = AtomicUsize::new(0);
 

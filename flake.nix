@@ -41,6 +41,7 @@
             pkgs.wasmtime
             pkgs.wac-cli
             pkgs.wasm-tools
+            pkgs.wabt
             pkgs.probe-rs-tools
           ];
         };
