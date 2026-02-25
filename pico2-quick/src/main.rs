@@ -5,8 +5,6 @@ extern crate alloc;
 
 use alloc::collections::BTreeMap;
 use alloc::string::ToString;
-use core::alloc::{GlobalAlloc, Layout};
-use core::sync::atomic::{AtomicUsize, Ordering};
 use defmt::{error, info};
 use embassy_executor::Spawner;
 use embassy_rp::gpio::{Level, Output};
@@ -27,71 +25,10 @@ wasmtime::component::bindgen!({
     world: "app",
 });
 
-// --- Custom Tracking Allocator ---
 const HEAP_SIZE: usize = 470 * 1024; // 440KB
-static ALLOCATED_BYTES: AtomicUsize = AtomicUsize::new(0);
-static PEAK_BYTES: AtomicUsize = AtomicUsize::new(0);
-
-struct TrackingAllocator;
-
-unsafe impl GlobalAlloc for TrackingAllocator {
-    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        // Wrap the inner allocator call in an unsafe block
-        let ptr = unsafe { INNER_ALLOCATOR.alloc(layout) };
-
-        // Intercept and log Out-Of-Memory events exactly when they happen!
-        if ptr.is_null() {
-            let current = ALLOCATED_BYTES.load(Ordering::Relaxed);
-            let free = HEAP_SIZE.saturating_sub(current);
-            error!(
-                "OOM INTERCEPTED! Wasmtime asked for {} bytes (alignment {}). Only {} bytes free out of {} total.",
-                layout.size(),
-                layout.align(),
-                free,
-                HEAP_SIZE
-            );
-        } else {
-            let prev = ALLOCATED_BYTES.fetch_add(layout.size(), Ordering::Relaxed);
-            let current = prev + layout.size();
-
-            // Track peak memory usage
-            let mut peak = PEAK_BYTES.load(Ordering::Relaxed);
-            while current > peak {
-                match PEAK_BYTES.compare_exchange_weak(
-                    peak,
-                    current,
-                    Ordering::Relaxed,
-                    Ordering::Relaxed,
-                ) {
-                    Ok(_) => break,
-                    Err(new_peak) => peak = new_peak,
-                }
-            }
-        }
-        ptr
-    }
-
-    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        ALLOCATED_BYTES.fetch_sub(layout.size(), Ordering::Relaxed);
-        // Wrap the inner deallocator call in an unsafe block
-        unsafe { INNER_ALLOCATOR.dealloc(ptr, layout) };
-    }
-}
 
 #[global_allocator]
-static TRACKING_ALLOCATOR: TrackingAllocator = TrackingAllocator;
-static INNER_ALLOCATOR: Heap = Heap::empty();
-
-// Helper to print memory usage at different stages
-fn log_memory_usage(stage: &str) {
-    let current = ALLOCATED_BYTES.load(Ordering::Relaxed);
-    let peak = PEAK_BYTES.load(Ordering::Relaxed);
-    let free = HEAP_SIZE.saturating_sub(current);
-    info!(
-        "[{}] Mem Used: {} B | Free: {} B | Peak: {} B",
-        stage, current, free, peak
-    );
-}
+static HEAP: Heap = Heap::empty();
 
 // --- Host State ---
 pub struct HostState {
@@ -146,11 +83,10 @@ async fn main(_spawner: Spawner) {
     {
         use core::mem::MaybeUninit;
         static mut HEAP_MEM: [MaybeUninit<u8>; HEAP_SIZE] = [MaybeUninit::uninit(); HEAP_SIZE];
-        unsafe { INNER_ALLOCATOR.init(core::ptr::addr_of_mut!(HEAP_MEM) as usize, HEAP_SIZE) }
+        unsafe { HEAP.init(core::ptr::addr_of_mut!(HEAP_MEM) as usize, HEAP_SIZE) }
     }
 
     info!("Heap initialized.");
-    log_memory_usage("Startup");
 
     let mut config = Config::new();
     config.target("pulley32").unwrap();
@@ -164,7 +100,6 @@ async fn main(_spawner: Spawner) {
     config.memory_reservation_for_growth(0);
 
     let engine = Engine::new(&config).expect("Engine failed");
-    log_memory_usage("After Engine::new");
 
     // --- Initialize SPI hardware ---
     let clk = p.PIN_18;
@@ -208,15 +143,10 @@ async fn main(_spawner: Spawner) {
         guest_bytes.len()
     );
 
-    log_memory_usage("Before deserialize");
     let component = unsafe { Component::deserialize(&engine, guest_bytes) }.unwrap();
-    log_memory_usage("After deserialize");
 
     info!("Instantiating...");
-    // If it fails here, the custom allocator will log the exact requested size first
     let app = App::instantiate(&mut store, &component, &linker).unwrap();
-
-    log_memory_usage("After instantiate");
 
     info!("Starting guest...");
     app.call_run(&mut store).unwrap();
