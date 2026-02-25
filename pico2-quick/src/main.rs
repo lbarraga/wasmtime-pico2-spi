@@ -5,7 +5,7 @@ extern crate alloc;
 
 use alloc::collections::BTreeMap;
 use alloc::string::ToString;
-use defmt::{error, info};
+use defmt::info;
 use embassy_executor::Spawner;
 use embassy_rp::gpio::{Level, Output};
 use embassy_rp::spi::{Config as RpSpiConfig, Phase, Polarity, Spi};

@@ -5,7 +5,7 @@ use alloc::collections::BTreeMap;
 use alloc::string::String;
 use core::marker::PhantomData;
 
-use embassy_rp::gpio::{AnyPin, Output};
+use embassy_rp::gpio::Output;
 use wasmtime::component::{HasData, Linker};
 
 wasmtime::component::bindgen!({
