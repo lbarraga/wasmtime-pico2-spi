@@ -25,7 +25,7 @@ wasmtime::component::bindgen!({
     world: "app",
 });
 
-const HEAP_SIZE: usize = 470 * 1024; // 440KB
+const HEAP_SIZE: usize = 470 * 1024;
 
 #[global_allocator]
 static HEAP: Heap = Heap::empty();
