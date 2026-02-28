@@ -21,8 +21,8 @@ use gpio::{GpioCtx, GpioView};
 use spi::{SpiCtx, SpiView};
 
 wasmtime::component::bindgen!({
-    path: "../guests/oled-screen/pacman/wit",
-    world: "app",
+    path: "../guests/temperature-sensor/wit",
+    world: "guest",
 });
 
 const HEAP_SIZE: usize = 470 * 1024;
@@ -104,27 +104,27 @@ async fn main(_spawner: Spawner) {
     // --- Initialize SPI hardware ---
     let clk = p.PIN_18;
     let mosi = p.PIN_19;
+    let miso = p.PIN_16; // ADDED: MISO pin (GP16) for reading from the sensor
 
     let mut spi_config = RpSpiConfig::default();
     spi_config.frequency = 8_000_000;
     spi_config.polarity = Polarity::IdleLow;
     spi_config.phase = Phase::CaptureOnFirstTransition;
 
-    let spi_driver = Spi::new_blocking_txonly(p.SPI0, clk, mosi, spi_config);
+    let spi_driver = Spi::new_blocking(p.SPI0, clk, mosi, miso, spi_config);
 
-    // --- Initialize GPIO Hardware ---
-    let mut pins = BTreeMap::new();
-    pins.insert("DC".to_string(), Output::new(p.PIN_20, Level::Low));
-    pins.insert("RES".to_string(), Output::new(p.PIN_21, Level::Low));
-    pins.insert("VBATC".to_string(), Output::new(p.PIN_22, Level::Low));
-    pins.insert("VDDC".to_string(), Output::new(p.PIN_23, Level::Low));
+    // Create the CS pin (GP17) and default it to High
+    let cs_pin = Output::new(p.PIN_17, Level::High);
 
     let host_state = HostState {
         spi_ctx: SpiCtx {
             table: ResourceTable::new(),
             spi: spi_driver,
+            cs: cs_pin, // <-- THIS IS THE FIX (Passing the pin to SPI)
         },
-        gpio_ctx: GpioCtx { pins },
+        gpio_ctx: GpioCtx {
+            pins: BTreeMap::new(), // No pins needed in GPIO map anymore!
+        },
         delay_ctx: DelayCtx {},
     };
 
@@ -146,8 +146,10 @@ async fn main(_spawner: Spawner) {
     let component = unsafe { Component::deserialize(&engine, guest_bytes) }.unwrap();
 
     info!("Instantiating...");
-    let app = App::instantiate(&mut store, &component, &linker).unwrap();
+    let app = Guest::instantiate(&mut store, &component, &linker).unwrap();
 
     info!("Starting guest...");
-    app.call_run(&mut store).unwrap();
+    app.my_temp_sensor_sensor_app()
+        .call_run(&mut store)
+        .unwrap();
 }

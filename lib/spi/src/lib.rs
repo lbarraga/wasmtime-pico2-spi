@@ -6,6 +6,7 @@ use alloc::vec;
 use alloc::vec::Vec;
 use core::marker::PhantomData;
 
+use embassy_rp::gpio::Output; // <-- Added Output
 use embassy_rp::peripherals::SPI0;
 use embassy_rp::spi::{Blocking, Spi};
 use wasmtime::component::{HasData, Linker, Resource, ResourceTable};
@@ -26,6 +27,7 @@ pub struct ActiveSpiDriver {
 pub struct SpiCtx {
     pub table: ResourceTable,
     pub spi: Spi<'static, SPI0, Blocking>,
+    pub cs: Output<'static>, // <-- Added the CS pin
 }
 
 pub trait SpiView {
@@ -74,11 +76,12 @@ impl<'a, T: SpiView> wasi::spi::spi::HostSpiDevice for SpiImpl<'a, T> {
         len: u64,
     ) -> Result<Vec<u8>, wasi::spi::spi::Error> {
         let mut buf = vec![0u8; len as usize];
-        self.host
-            .spi_ctx()
-            .spi
-            .blocking_read(&mut buf)
-            .map_err(|_| wasi::spi::spi::Error::Other("Read failed".to_string()))?;
+
+        self.host.spi_ctx().cs.set_low(); // <-- Pull CS low
+        let res = self.host.spi_ctx().spi.blocking_read(&mut buf);
+        self.host.spi_ctx().cs.set_high(); // <-- Pull CS high
+
+        res.map_err(|_| wasi::spi::spi::Error::Other("Read failed".to_string()))?;
         Ok(buf)
     }
 
@@ -87,11 +90,11 @@ impl<'a, T: SpiView> wasi::spi::spi::HostSpiDevice for SpiImpl<'a, T> {
         _handle: Resource<ActiveSpiDriver>,
         data: Vec<u8>,
     ) -> Result<(), wasi::spi::spi::Error> {
-        self.host
-            .spi_ctx()
-            .spi
-            .blocking_write(&data)
-            .map_err(|_| wasi::spi::spi::Error::Other("Write failed".to_string()))?;
+        self.host.spi_ctx().cs.set_low(); // <-- Pull CS low
+        let res = self.host.spi_ctx().spi.blocking_write(&data);
+        self.host.spi_ctx().cs.set_high(); // <-- Pull CS high
+
+        res.map_err(|_| wasi::spi::spi::Error::Other("Write failed".to_string()))?;
         Ok(())
     }
 
@@ -101,11 +104,16 @@ impl<'a, T: SpiView> wasi::spi::spi::HostSpiDevice for SpiImpl<'a, T> {
         data: Vec<u8>,
     ) -> Result<Vec<u8>, wasi::spi::spi::Error> {
         let mut read_buf = vec![0u8; data.len()];
-        self.host
+
+        self.host.spi_ctx().cs.set_low(); // <-- Pull CS low
+        let res = self
+            .host
             .spi_ctx()
             .spi
-            .blocking_transfer(&mut read_buf, &data)
-            .map_err(|_| wasi::spi::spi::Error::Other("Transfer failed".to_string()))?;
+            .blocking_transfer(&mut read_buf, &data);
+        self.host.spi_ctx().cs.set_high(); // <-- Pull CS high
+
+        res.map_err(|_| wasi::spi::spi::Error::Other("Transfer failed".to_string()))?;
         Ok(read_buf)
     }
 
@@ -115,32 +123,38 @@ impl<'a, T: SpiView> wasi::spi::spi::HostSpiDevice for SpiImpl<'a, T> {
         operations: Vec<wasi::spi::spi::Operation>,
     ) -> Result<Vec<wasi::spi::spi::OperationResult>, wasi::spi::spi::Error> {
         let mut results = Vec::new();
+
+        self.host.spi_ctx().cs.set_low(); // <-- Lock CS low for the entire transaction
+
         for op in operations {
             match op {
                 wasi::spi::spi::Operation::Read(len) => {
                     let mut buf = vec![0u8; len as usize];
-                    self.host
-                        .spi_ctx()
-                        .spi
-                        .blocking_read(&mut buf)
-                        .map_err(|_| wasi::spi::spi::Error::Other("Read error".to_string()))?;
+                    if self.host.spi_ctx().spi.blocking_read(&mut buf).is_err() {
+                        self.host.spi_ctx().cs.set_high(); // Safety release
+                        return Err(wasi::spi::spi::Error::Other("Read error".to_string()));
+                    }
                     results.push(wasi::spi::spi::OperationResult::Read(buf));
                 }
                 wasi::spi::spi::Operation::Write(data) => {
-                    self.host
-                        .spi_ctx()
-                        .spi
-                        .blocking_write(&data)
-                        .map_err(|_| wasi::spi::spi::Error::Other("Write error".to_string()))?;
+                    if self.host.spi_ctx().spi.blocking_write(&data).is_err() {
+                        self.host.spi_ctx().cs.set_high(); // Safety release
+                        return Err(wasi::spi::spi::Error::Other("Write error".to_string()));
+                    }
                     results.push(wasi::spi::spi::OperationResult::Write);
                 }
                 wasi::spi::spi::Operation::Transfer(data) => {
                     let mut read_buf = vec![0u8; data.len()];
-                    self.host
+                    if self
+                        .host
                         .spi_ctx()
                         .spi
                         .blocking_transfer(&mut read_buf, &data)
-                        .map_err(|_| wasi::spi::spi::Error::Other("Transfer error".to_string()))?;
+                        .is_err()
+                    {
+                        self.host.spi_ctx().cs.set_high(); // Safety release
+                        return Err(wasi::spi::spi::Error::Other("Transfer error".to_string()));
+                    }
                     results.push(wasi::spi::spi::OperationResult::Transfer(read_buf));
                 }
                 wasi::spi::spi::Operation::DelayNs(ns) => {
@@ -149,6 +163,8 @@ impl<'a, T: SpiView> wasi::spi::spi::HostSpiDevice for SpiImpl<'a, T> {
                 }
             }
         }
+
+        self.host.spi_ctx().cs.set_high(); // <-- Release CS high
         Ok(results)
     }
 
